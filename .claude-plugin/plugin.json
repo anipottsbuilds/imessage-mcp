@@ -6,8 +6,8 @@
     "name": "Ani Potts",
     "url": "https://github.com/anipotts"
   },
-  "homepage": "https://github.com/anipotts/imessage-mcp",
-  "repository": "https://github.com/anipotts/imessage-mcp",
+  "homepage": "https://github.com/anipottsbuilds/imessage-mcp",
+  "repository": "https://github.com/anipottsbuilds/imessage-mcp",
   "license": "MIT",
   "mcpServers": {
     "imessage": {

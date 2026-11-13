@@ -61,6 +61,12 @@ jobs:
         run: npm run verify
         env:
           IMESSAGE_E2E_REQUIRE_BUNDLE: ${{ matrix.os-version == 26 && matrix.node-version == 24 && '1' || '0' }}
+      - if: matrix.os-version == 26 && matrix.node-version == 24
+        name: exercise the installed npm artifact
+        shell: bash
+        run: |
+          TARBALL=$(npm pack --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s)[0].filename))")
+          IMESSAGE_E2E_REQUIRE_BUNDLE=1 npm run test:package -- "$TARBALL"
 
   intel-package-smoke:
     name: macos 26 intel package smoke

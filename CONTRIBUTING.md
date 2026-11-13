@@ -11,6 +11,10 @@ Use synthetic data only. Do not attach or commit Messages databases, WAL files, 
 
 imessage-mcp is read-only. Sending or changing messages or contacts, public HTTP exposure, and fixtures built from real data are out of scope.
 
+## Packed artifact verification
+
+After building, run `npm pack` and `npm run test:package -- <generated.tgz>` to install the exact npm artifact in a clean temporary directory and run the synthetic stdio/HTTP protocol suite against it. The release workflow does this before publishing; repository-only tests cannot prove that all runtime files are packaged. Set `IMESSAGE_E2E_REQUIRE_BUNDLE=1` after `npm run build:mcpb` to require the desktop artifact checks too.
+
 ## Dependency updates
 
 Dependabot pull requests merge themselves once every required check passes and the branch is current with `main`. The private `imessage-mcp-maintenance` GitHub App is installed only on this repository, with Contents, Pull requests, and Workflows write permissions and mandatory Metadata read. It has no account permissions, user OAuth, or webhooks. It must not be added to a branch-protection bypass list.
@@ -28,7 +32,7 @@ The daily `maintenance health` workflow mints a read-only installation token eve
 Recovery:
 
 1. For authentication failures, verify that the App is still installed only on this repository, the client ID matches, and the Actions private-key secret matches an active App key. A revoked key or uninstalled App requires an authorized repair. Do not put credentials in issues, logs, chat, or source.
-2. Run `gh workflow run maintenance-health.yml --repo anipotts/imessage-mcp --ref main`, `gh workflow run dependabot-rebase.yml --repo anipotts/imessage-mcp --ref main`, and `gh workflow run dependabot-automerge.yml --repo anipotts/imessage-mcp --ref main`. Check their actual conclusions, not just successful dispatch.
+2. Run `gh workflow run maintenance-health.yml --repo anipottsbuilds/imessage-mcp --ref main`, `gh workflow run dependabot-rebase.yml --repo anipottsbuilds/imessage-mcp --ref main`, and `gh workflow run dependabot-automerge.yml --repo anipottsbuilds/imessage-mcp --ref main`. Check their actual conclusions, not just successful dispatch.
 3. For a stalled PR, inspect its current checks and conflicts. Required checks and branch protection stay in force; never bypass them to clear a queue.
 
 ### Limits of unattended maintenance
@@ -57,9 +61,9 @@ curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer | open
 3. Store the three files as secrets from stdin, then delete the local copies.
 
 ```sh
-gh secret set MCPB_SIGNING_CERT --repo anipotts/imessage-mcp < cert.pem
-gh secret set MCPB_SIGNING_KEY --repo anipotts/imessage-mcp < key.pem
-gh secret set MCPB_SIGNING_INTERMEDIATE --repo anipotts/imessage-mcp < intermediate.pem
+gh secret set MCPB_SIGNING_CERT --repo anipottsbuilds/imessage-mcp < cert.pem
+gh secret set MCPB_SIGNING_KEY --repo anipottsbuilds/imessage-mcp < key.pem
+gh secret set MCPB_SIGNING_INTERMEDIATE --repo anipottsbuilds/imessage-mcp < intermediate.pem
 rm -P key.pem developer-id.p12
 ```
 
