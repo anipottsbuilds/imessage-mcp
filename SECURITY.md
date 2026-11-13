@@ -58,3 +58,7 @@ A release is a `v<version>` tag on a commit that reached protected `main` throug
 - as an immutable GitHub release, whose desktop bundle is signed with an Apple Developer ID certificate when one is configured.
 
 Every GitHub Action is pinned to a reviewed commit.
+
+## Pagination cursors
+
+New page cursors are authenticated and encrypted with a process-local key so they do not reveal exact timestamps or row identifiers through redacted or aggregate results. They are opaque, not portable across server restarts; restart the traversal after `DATABASE_CHANGED`. This does not change checkpoint-backed sync cursors.

@@ -10,11 +10,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/anipotts/imessage-mcp"
+    "url": "https://github.com/anipottsbuilds/imessage-mcp"
   },
-  "homepage": "https://github.com/anipotts/imessage-mcp",
-  "documentation": "https://github.com/anipotts/imessage-mcp#readme",
-  "support": "https://github.com/anipotts/imessage-mcp/issues",
+  "homepage": "https://github.com/anipottsbuilds/imessage-mcp",
+  "documentation": "https://github.com/anipottsbuilds/imessage-mcp#readme",
+  "support": "https://github.com/anipottsbuilds/imessage-mcp/issues",
   "icon": "assets/icon-512.png",
   "icons": [
     {
@@ -44,7 +44,7 @@
   ],
   "license": "MIT",
   "privacy_policies": [
-    "https://github.com/anipotts/imessage-mcp/blob/main/PRIVACY.md"
+    "https://github.com/anipottsbuilds/imessage-mcp/blob/main/PRIVACY.md"
   ],
   "server": {
     "type": "node",

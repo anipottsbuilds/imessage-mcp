@@ -2,7 +2,7 @@
 // the public npm registry, carries no identifiers or message data, and is off
 // when IMESSAGE_UPDATE_CHECK=0.
 
-export const LATEST_BUNDLE_URL = "https://github.com/anipotts/imessage-mcp/releases/latest/download/imessage-mcp.mcpb";
+export const LATEST_BUNDLE_URL = "https://github.com/anipottsbuilds/imessage-mcp/releases/latest/download/imessage-mcp.mcpb";
 const LATEST_METADATA_URL = "https://registry.npmjs.org/imessage-mcp/latest";
 const WAIT_MS = 1_500;
 const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -48,9 +48,28 @@ async function fetchLatest(fetchImpl: Fetch): Promise<string | null> {
       signal: AbortSignal.timeout(10_000),
       headers: { accept: "application/json" },
     });
-    if (!response.ok) return null;
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > MAX_RESPONSE_BYTES) return null;
+    if (!response.ok || !response.body) {
+      await response.body?.cancel();
+      return null;
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > MAX_RESPONSE_BYTES) {
+          await reader.cancel();
+          return null;
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const body = Buffer.concat(chunks, bytes).toString("utf8");
     const version = (JSON.parse(body) as { version?: unknown }).version;
     return typeof version === "string" && VERSION.test(version) ? version : null;
   } catch {

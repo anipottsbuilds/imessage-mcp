@@ -38,8 +38,11 @@ import { appleNanoseconds, createFixture, type Fixture } from "./fixture.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
-const binPath = path.join(repoRoot, "bin", "imessage-mcp.js");
-const cliDistPath = path.join(repoRoot, "dist", "cli.js");
+// Package verification uses a clean, installed tarball; fixtures remain in this checkout.
+const serverRoot = process.env.IMESSAGE_E2E_PACKAGE_ROOT
+  ? path.resolve(process.env.IMESSAGE_E2E_PACKAGE_ROOT) : repoRoot;
+const binPath = path.join(serverRoot, "bin", "imessage-mcp.js");
+const cliDistPath = path.join(serverRoot, "dist", "cli.js");
 
 if (!existsSync(cliDistPath)) {
   throw new Error(
@@ -126,7 +129,7 @@ async function connectStdio(args: string[], envExtra: Record<string, string | un
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [binPath, ...args],
-    cwd: repoRoot,
+    cwd: serverRoot,
     env: baseEnv(envExtra),
     stderr: "pipe",
   });
@@ -188,7 +191,7 @@ async function connectHttp(databasePath: string): Promise<Client> {
     binPath, "--transport", "http", "--port", String(port),
     "--database", databasePath, "--contacts", "none", "--privacy", "full",
   ], {
-    cwd: repoRoot,
+    cwd: serverRoot,
     env: baseEnv({ IMESSAGE_API_TOKEN: token }),
     stdio: ["ignore", "ignore", "pipe"],
   }));
@@ -610,7 +613,7 @@ describe("http transport", () => {
       "--database", fixture.databasePath,
       "--contacts", "none",
     ], {
-      cwd: repoRoot,
+      cwd: serverRoot,
       env: baseEnv({ IMESSAGE_API_TOKEN: token }),
       stdio: ["ignore", "ignore", "pipe"],
     }));
@@ -696,7 +699,7 @@ describe("older protocol version clients", () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [binPath, "--database", fixture.databasePath, "--contacts", "none"],
-      cwd: repoRoot,
+      cwd: serverRoot,
       env: baseEnv(),
       stderr: "pipe",
     });
