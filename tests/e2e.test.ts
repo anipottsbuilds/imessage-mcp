@@ -662,13 +662,22 @@ function randomToken(): string {
 // ---------------------------------------------------------------------------
 
 describe("node version floor", () => {
-  const oldNodeBinary = path.join(homedir(), ".nvm", "versions", "node", "v22.22.3", "bin", "node");
+  // An explicit binary makes the rejection check deterministic on local and CI hosts.
+  const configuredOldNode = process.env.IMESSAGE_E2E_OLD_NODE_BINARY;
+  const oldNodeBinary = configuredOldNode ?? path.join(homedir(), ".nvm", "versions", "node", "v22.22.3", "bin", "node");
+  if (configuredOldNode !== undefined && (!path.isAbsolute(configuredOldNode) || !existsSync(configuredOldNode))) {
+    throw new Error("IMESSAGE_E2E_OLD_NODE_BINARY must name an existing absolute Node binary");
+  }
   const hasOldNode = existsSync(oldNodeBinary);
   const testName = hasOldNode
     ? "refuses to run on Node older than 24.16"
     : `refuses to run on Node older than 24.16 (skipped: no Node binary at ${oldNodeBinary})`;
 
   it.skipIf(!hasOldNode)(testName, () => {
+    const version = spawnSync(oldNodeBinary, ["--version"], { encoding: "utf8" });
+    expect(version.error).toBeUndefined();
+    expect(version.status).toBe(0);
+    expect(version.stdout.trim()).toMatch(/^v22\./u);
     const result = spawnSync(oldNodeBinary, [binPath, "--version"], { encoding: "utf8" });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/needs Node 24\.16/u);

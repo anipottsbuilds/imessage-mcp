@@ -15,6 +15,8 @@ imessage-mcp is read-only. Sending or changing messages or contacts, public HTTP
 
 After building, run `npm pack` and `npm run test:package -- <generated.tgz>` to install the exact npm artifact in a clean temporary directory and run the synthetic stdio/HTTP protocol suite against it. The release workflow does this before publishing; repository-only tests cannot prove that all runtime files are packaged. Set `IMESSAGE_E2E_REQUIRE_BUNDLE=1` after `npm run build:mcpb` to require the desktop artifact checks too.
 
+Set `IMESSAGE_E2E_OLD_NODE_BINARY` to an absolute Node 22 executable path to require the runtime-floor rejection check. An invalid explicit path or a binary that is not Node 22 fails the check.
+
 ## Dependency updates
 
 Dependabot pull requests merge themselves once every required check passes and the branch is current with `main`. The private `imessage-mcp-maintenance` GitHub App is installed only on this repository, with Contents, Pull requests, and Workflows write permissions and mandatory Metadata read. It has no account permissions, user OAuth, or webhooks. It must not be added to a branch-protection bypass list.
