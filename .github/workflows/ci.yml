@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os-version: [14, 15, 26]
+        os-version: [15, 26]
         node-version: [22, 24, 25, 26]
         include:
           # Verify the declared minimum as well as the newest 24.x patch.
@@ -86,8 +86,8 @@ jobs:
           IMESSAGE_E2E_REQUIRE_BUNDLE: "1"
 
   performance:
-    name: million-message performance (macos 14, node 24)
-    runs-on: macos-14
+    name: million-message performance (macos 26, node 24)
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
