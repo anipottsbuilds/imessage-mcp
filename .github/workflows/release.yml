@@ -86,7 +86,8 @@ jobs:
           mkdir release-artifact
           TARBALL=$(npm pack --json --pack-destination release-artifact | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s)[0].filename))")
           test -f "release-artifact/${TARBALL}"
-          IMESSAGE_E2E_REQUIRE_BUNDLE=1 npm run e2e
+          # Exercise the exact artifact in isolation before it can be published.
+          IMESSAGE_E2E_REQUIRE_BUNDLE=1 npm run test:package -- "release-artifact/${TARBALL}"
           mv dist-mcpb/imessage-mcp.mcpb release-artifact/
           test -f release-artifact/imessage-mcp.mcpb
           echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
