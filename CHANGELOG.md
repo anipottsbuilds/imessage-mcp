@@ -4,6 +4,20 @@ this file follows [keep a changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ## unreleased
 
+## 3.3.3
+
+### fixed
+
+- encrypt page cursors so redacted and aggregate results do not expose exact timestamps or row identifiers. restart page traversals after a server restart; checkpoint-backed sync cursors keep their existing behavior.
+- stop and cancel oversized update metadata responses while streaming, before consuming the complete body.
+- use canonical organization URLs for plugin metadata, desktop downloads and support links.
+
+### changed
+
+- migrate CI from retired GitHub macOS 14 runners to macOS 15/26 and run the million-message performance gate on macOS 26. automated macOS 14 coverage is no longer available.
+- verify the exact installed npm artifact with synthetic protocol tests before publication, alongside required desktop bundle checks.
+- allow an explicit older Node binary in the runtime-floor regression test; invalid configured binaries fail rather than silently skip.
+
 ## 3.3.2
 
 ### changed

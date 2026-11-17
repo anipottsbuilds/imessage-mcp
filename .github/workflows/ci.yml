@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os-version: [14, 15, 26]
+        os-version: [15, 26]
         node-version: [22, 24, 25, 26]
         include:
           # Verify the declared minimum as well as the newest 24.x patch.
@@ -61,6 +61,12 @@ jobs:
         run: npm run verify
         env:
           IMESSAGE_E2E_REQUIRE_BUNDLE: ${{ matrix.os-version == 26 && matrix.node-version == 24 && '1' || '0' }}
+      - if: matrix.os-version == 26 && matrix.node-version == 24
+        name: exercise the installed npm artifact
+        shell: bash
+        run: |
+          TARBALL=$(npm pack --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s)[0].filename))")
+          IMESSAGE_E2E_REQUIRE_BUNDLE=1 npm run test:package -- "$TARBALL"
 
   intel-package-smoke:
     name: macos 26 intel package smoke
@@ -80,8 +86,8 @@ jobs:
           IMESSAGE_E2E_REQUIRE_BUNDLE: "1"
 
   performance:
-    name: million-message performance (macos 14, node 24)
-    runs-on: macos-14
+    name: million-message performance (macos 26, node 24)
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
