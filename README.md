@@ -50,14 +50,14 @@ amp mcp add imessage -- npx -y imessage-mcp@latest
 claude mcp add --scope user imessage -- npx -y imessage-mcp@latest
 ```
 
-Or install the plugin: `/plugin marketplace add anipotts/imessage-mcp`, then `/plugin install imessage-mcp@anipotts`.
+Or install the plugin: `/plugin marketplace add anipottsbuilds/imessage-mcp`, then `/plugin install imessage-mcp@anipotts`.
 
 </details>
 
 <details>
 <summary>Claude Desktop</summary>
 
-Download [imessage-mcp.mcpb](https://github.com/anipotts/imessage-mcp/releases/latest/download/imessage-mcp.mcpb) and double-click it, or install **iMessage History** from Settings > Extensions if it is listed there. To update a bundle you installed yourself, download the newest one and double-click it again.
+Download [imessage-mcp.mcpb](https://github.com/anipottsbuilds/imessage-mcp/releases/latest/download/imessage-mcp.mcpb) and double-click it, or install **iMessage History** from Settings > Extensions if it is listed there. To update a bundle you installed yourself, download the newest one and double-click it again.
 
 Then turn on Claude in Full Disk Access and quit and reopen Claude.
 
@@ -195,6 +195,8 @@ Clients that attach resources can use `imessage://conversations` and `imessage:/
 Every tool is read-only and marked `readOnlyHint`. Results use plain ids (`message_id`, `chat_id`, `attachment_id`) you can pass between tools.
 
 Apple can record the same message in several conversations. Search returns that message once with all canonical `chat_ids` and their `conversations` labels. A single membership also includes `chat_id` and `conversation`; for shared results, pass the relevant id from `chat_ids` to `get_conversation`. Only Apple's explicit lookup evidence combines chat aliases. Shared messages do not combine unrelated conversations.
+
+Pagination cursors are opaque and scoped to the running server. Pass them back unchanged; after a server restart or `DATABASE_CHANGED`, begin that traversal again. Sync cursors retain their separate checkpoint-backed behavior.
 
 Global and contact message counts deduplicate shared records within the requested scope. Conversation timelines and sequence metrics retain each recorded membership, so adding per-conversation counts can exceed the global count. Sync includes `chat_ids` on changes and emits `message_membership_changed` with `previous_chat_ids`; its `changed_at` is null because Apple does not timestamp these joins. Logged memberships describe the change when observed; available text, sender and receipt fields describe current source state. Upgrading the index format rebuilds its cache once and invalidates older sync cursors; start a new sync when it returns `DATABASE_CHANGED`.
 
