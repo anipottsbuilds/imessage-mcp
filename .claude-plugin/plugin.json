@@ -1,13 +1,13 @@
 {
   "name": "imessage-mcp",
-  "version": "3.3.1",
+  "version": "3.3.3",
   "description": "Search and read your Apple Messages history. Read-only, runs on your Mac.",
   "author": {
     "name": "Ani Potts",
     "url": "https://github.com/anipotts"
   },
-  "homepage": "https://github.com/anipotts/imessage-mcp",
-  "repository": "https://github.com/anipotts/imessage-mcp",
+  "homepage": "https://github.com/anipottsbuilds/imessage-mcp",
+  "repository": "https://github.com/anipottsbuilds/imessage-mcp",
   "license": "MIT",
   "mcpServers": {
     "imessage": {

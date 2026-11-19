@@ -51,6 +51,36 @@ describe("update check", () => {
     expect(await checkForUpdate("2.1.3", { env: enabled, fetch })).toEqual({ status: "unknown", current_version: "2.1.3" });
   });
 
+  it("cancels an oversized streaming response before consuming the rest", async () => {
+    const cancel = vi.fn();
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > 2) throw new Error("oversized response must not be drained");
+        controller.enqueue(new Uint8Array(130 * 1024));
+      }, cancel,
+    }, { highWaterMark: 0 });
+    const fetch = vi.fn(async () => new Response(body));
+    expect((await checkForUpdate("2.1.3", { env: enabled, fetch })).status).toBe("unknown");
+    expect(pulls).toBe(2);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("decodes JSON split across response chunks", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode('{"version":'));
+        controller.enqueue(encoder.encode('"2.2.0"}'));
+        controller.close();
+      },
+    });
+    expect((await checkForUpdate("2.1.3", {
+      env: enabled, fetch: vi.fn(async () => new Response(body)),
+    })).status).toBe("available");
+  });
+
   it("makes no request when disabled", async () => {
     const fetch = registry({ version: "9.9.9" });
     expect(await checkForUpdate("2.1.3", { env: { IMESSAGE_UPDATE_CHECK: "0" }, fetch })).toEqual({

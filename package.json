@@ -1,7 +1,7 @@
 {
   "name": "imessage-mcp",
-  "version": "3.3.1",
-  "mcpName": "io.github.anipotts/imessage-mcp",
+  "version": "3.3.3",
+  "mcpName": "io.github.anipottsbuilds/imessage-mcp",
   "description": "Search and read your Apple Messages history from any MCP client. Read-only, runs on your Mac, no native dependencies.",
   "author": "Ani Potts",
   "license": "MIT",
@@ -30,6 +30,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
+    "test:package": "node scripts/test-package.mjs",
     "perf": "npm run build && tsx scripts/perf.ts",
     "live-parity": "tsx scripts/live-parity.ts",
     "verify": "npm run typecheck && npm test && npm run e2e && npm audit --audit-level=high && npm pack --dry-run",
@@ -37,15 +38,15 @@
     "preflight": "npm run verify && npm run perf && npm run build:mcpb && npm run e2e && npm run live-parity"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/server": "2.4.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.3.1",
-    "@types/node": "26.6.5",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@types/node": "26.6.6",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vitest": "5.0.5"
+    "vitest": "5.1.0"
   },
   "engines": {
     "node": ">=24.16.0"
@@ -75,10 +76,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anipotts/imessage-mcp.git"
+    "url": "git+https://github.com/anipottsbuilds/imessage-mcp.git"
   },
-  "homepage": "https://github.com/anipotts/imessage-mcp",
+  "homepage": "https://github.com/anipottsbuilds/imessage-mcp",
   "bugs": {
-    "url": "https://github.com/anipotts/imessage-mcp/issues"
+    "url": "https://github.com/anipottsbuilds/imessage-mcp/issues"
   }
 }
