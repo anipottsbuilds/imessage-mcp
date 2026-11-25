@@ -4,6 +4,12 @@ this file follows [keep a changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ## unreleased
 
+## 3.4.0
+
+### added
+
+- add the read-only `catch-up` and `find-it` workflows for clients that support Skills over MCP. Existing tools, prompts, privacy modes and transport settings are unchanged.
+
 ## 3.3.3
 
 ### fixed

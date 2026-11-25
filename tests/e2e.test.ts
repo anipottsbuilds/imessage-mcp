@@ -18,7 +18,7 @@
 //   npm run build && npx vitest run --config vitest.e2e.config.ts
 
 import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, copyFileSync, rmSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
@@ -26,7 +26,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport, type ClientOptions } from "@modelcontextprotocol/client";
+import { SKILLS_EXTENSION_ID, SkillsClient } from "@modelcontextprotocol/client/ext/skills";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import Database from "../src/sqlite.js";
@@ -125,7 +126,9 @@ function baseEnv(extra: Record<string, string | undefined> = {}): Record<string,
   return Object.fromEntries(Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
-async function connectStdio(args: string[], envExtra: Record<string, string | undefined> = {}): Promise<Client> {
+async function connectStdio(
+  args: string[], envExtra: Record<string, string | undefined> = {}, clientOptions?: ClientOptions,
+): Promise<Client> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [binPath, ...args],
@@ -133,7 +136,7 @@ async function connectStdio(args: string[], envExtra: Record<string, string | un
     env: baseEnv(envExtra),
     stderr: "pipe",
   });
-  const client = trackClient(new Client({ name: "imessage-mcp-e2e", version: "1.0.0" }));
+  const client = trackClient(new Client({ name: "imessage-mcp-e2e", version: "1.0.0" }, clientOptions));
   await client.connect(transport);
   return client;
 }
@@ -143,6 +146,39 @@ function structuredData(result: { structuredContent?: unknown; isError?: boolean
   const structured = result.structuredContent as { data?: unknown } | undefined;
   expect(structured?.data, "expected structuredContent.data").toBeDefined();
   return structured!.data as Record<string, unknown>;
+}
+
+const SKILL_NAMES = ["catch-up", "find-it"] as const;
+
+async function assertWorkflowSkills(client: Client, root: string, modern: boolean): Promise<void> {
+  expect(client.getServerCapabilities()?.extensions?.[SKILLS_EXTENSION_ID]).toBeDefined();
+  const skills = new SkillsClient(client);
+  expect(skills.supported).toBe(true);
+  const list = await skills.list();
+  expect(list.invalid).toEqual([]);
+  expect(list.skills.map(({ frontmatter }) => frontmatter.name)).toEqual(SKILL_NAMES);
+  expect(list.ttlMs).toBe(modern ? 0 : undefined);
+  expect(list.cacheScope).toBe(modern ? "private" : undefined);
+
+  for (const name of SKILL_NAMES) {
+    const uri = `skill://${name}/SKILL.md`;
+    const skill = list.skills.find((entry) => entry.uri === uri)!;
+    const relative = path.join("skills", name, "SKILL.md");
+    const original = readFileSync(path.join(repoRoot, relative));
+    expect(readFileSync(path.join(root, relative))).toEqual(original);
+    expect(skill.resources).toEqual([{
+      uri,
+      size: original.length,
+      digest: `sha256:${createHash("sha256").update(original).digest("hex")}`,
+    }]);
+    expect((await skills.get(uri)).skill).toEqual(skill);
+    const read = await skills.read(skill);
+    expect(read.verified).toBe(true);
+    expect(Buffer.from(read.bytes)).toEqual(original);
+  }
+
+  await expect(skills.get("skill://not-published/SKILL.md")).rejects.toThrow();
+  await expect(client.readResource({ uri: "skill://catch-up/not-published.md" })).rejects.toThrow();
 }
 
 function structuredError(result: { structuredContent?: unknown; isError?: boolean }): { reason: string; message: string } {
@@ -184,7 +220,7 @@ async function waitForHttpReady(child: ChildProcessWithoutNullStreams): Promise<
   });
 }
 
-async function connectHttp(databasePath: string): Promise<Client> {
+async function connectHttp(databasePath: string, clientOptions?: ClientOptions): Promise<Client> {
   const port = await freePort();
   const token = randomToken();
   const child = trackChild(spawn(process.execPath, [
@@ -199,7 +235,7 @@ async function connectHttp(databasePath: string): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
     authProvider: { token: async () => token },
   });
-  const client = trackClient(new Client({ name: "imessage-mcp-e2e-membership-http", version: "1.0.0" }));
+  const client = trackClient(new Client({ name: "imessage-mcp-e2e-membership-http", version: "1.0.0" }, clientOptions));
   await client.connect(transport);
   return client;
 }
@@ -317,6 +353,30 @@ describe("stdio handshake", () => {
 
     const templates = await client.listResourceTemplates();
     expect(templates.resourceTemplates.map((template) => template.uriTemplate)).toContain("imessage://conversations/{chat_id}");
+  });
+});
+
+describe("server-provided workflow skills", () => {
+  it.each([
+    ["stdio", "2025-11-25"],
+    ["stdio", "2026-07-28"],
+    ["http", "2025-11-25"],
+    ["http", "2026-07-28"],
+  ] as const)("serves byte-exact instructions alongside existing primitives over %s (%s)", async (pipe, revision) => {
+    const fixture = trackFixture(createFixture());
+    const modern = revision === "2026-07-28";
+    const options: ClientOptions = modern
+      ? { versionNegotiation: { mode: { pin: revision } } }
+      : { supportedProtocolVersions: [revision] };
+    const client = pipe === "stdio"
+      ? await connectStdio(["--database", fixture.databasePath, "--contacts", "none"], {}, options)
+      : await connectHttp(fixture.databasePath, options);
+    expect(client.getNegotiatedProtocolVersion()).toBe(revision);
+    await assertWorkflowSkills(client, serverRoot, modern);
+    expect((await client.listTools()).tools.map(({ name }) => name).sort()).toEqual(TOOL_NAMES);
+    expect((await client.listPrompts()).prompts.map(({ name }) => name).sort()).toEqual(["catch_up", "draft_reply", "recap"]);
+    expect((await client.listResources()).resources.map(({ uri }) => uri)).toContain("imessage://conversations");
+    expect((await client.readResource({ uri: "imessage://conversations" })).contents).toHaveLength(1);
   });
 });
 
@@ -805,6 +865,9 @@ describe("mcpb bundle", () => {
     expect(existsSync(path.join(root, "manifest.json"))).toBe(true);
     expect(existsSync(path.join(root, "bin"))).toBe(true);
     expect(existsSync(path.join(root, "dist"))).toBe(true);
+    expect(listFilesRecursive(path.join(root, "skills")).sort()).toEqual(
+      SKILL_NAMES.map((name) => path.join(name, "SKILL.md")),
+    );
     expect(existsSync(path.join(root, "node_modules", "@modelcontextprotocol"))).toBe(true);
     expect(existsSync(path.join(root, "src")), "bundle must not carry sources").toBe(false);
     expect(existsSync(path.join(root, "tests")), "bundle must not carry tests").toBe(false);
@@ -839,6 +902,7 @@ describe("mcpb bundle", () => {
       });
       const client = trackClient(new Client({ name: "imessage-mcp-e2e-bundle", version: "1.0.0" }));
       await client.connect(transport);
+      if (privacy === "full") await assertWorkflowSkills(client, root, false);
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual(TOOL_NAMES);
       for (const [name, args] of membershipCalls()) {
