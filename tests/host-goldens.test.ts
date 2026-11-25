@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { score } from "../scripts/host-goldens.mjs";
+import { score, traceRecord } from "../scripts/host-goldens.mjs";
 
 const read = (name: string) => ({ method: "resources/read", uri: `skill://${name}/SKILL.md` });
 const call = (tool: string, args: Record<string, unknown> = {}) => ({ method: "tools/call", tool, ...args });
@@ -34,5 +34,26 @@ describe("real-host golden score contract", () => {
     expect(score("specific-chat", answer, findTrace.slice(0, -1)).passed).toBe(false);
     expect(score("specific-chat", answer, [...findTrace,
       call("search_messages", { mode: "exact", has_person_filter: true })]).passed).toBe(false);
+  });
+});
+
+describe("golden trace scope", () => {
+  it("drops payload values and suppresses unknown tool and URI strings", () => {
+    const marker = "fictional private trace marker";
+    expect(traceRecord({ method: "tools/call", params: { name: marker, arguments: {
+      mode: marker, replied: marker, chat_id: marker, around_message_id: -2, contact: marker, query: marker,
+    } } })).toEqual({ method: "tools/call", tool: "unexpected", has_person_filter: true });
+    expect(traceRecord({ method: "resources/read", params: { uri: marker } }))
+      .toEqual({ method: "resources/read" });
+    expect(traceRecord({ method: "tools/call", params: { name: "get_conversation", arguments: {
+      chat_id: 22, around_message_id: 305, query: marker,
+    } } })).toEqual({ method: "tools/call", tool: "get_conversation", chat_id: 22, around_message_id: 305 });
+  });
+
+  it("never passes a truncated synthetic trace", () => {
+    expect(score("new-ask", { matches: [pair(102, 11), pair(202, 22)] }, [
+      read("catch-up"), call("list_conversations"), call("get_conversation", { chat_id: 11 }),
+      { method: "trace_overflow" },
+    ]).passed).toBe(false);
   });
 });

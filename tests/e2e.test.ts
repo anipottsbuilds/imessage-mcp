@@ -786,7 +786,7 @@ describe("older protocol version clients", () => {
 // ---------------------------------------------------------------------------
 
 describe("concurrency during the first search-index build", () => {
-  it("answers an uncached conversation request during a held first build, then completes the index", async () => {
+  it.each(["background", "cold search"] as const)("answers an uncached conversation request during a held %s build, then completes the index", async (start) => {
     const fixture = trackFixture(createFixture());
     const writer = new Database(fixture.databasePath);
     try {
@@ -817,7 +817,7 @@ describe("concurrency during the first search-index build", () => {
       args: ["--import", preload, binPath, "--database", fixture.databasePath, "--contacts", "none"],
       cwd: serverRoot,
       env: baseEnv({
-        IMESSAGE_WARM_SEARCH: "1",
+        IMESSAGE_WARM_SEARCH: start === "background" ? "1" : "0",
         IMESSAGE_E2E_SERVER_ROOT: serverRoot,
         IMESSAGE_E2E_INDEX_GATE: gate,
       }),
@@ -825,12 +825,17 @@ describe("concurrency during the first search-index build", () => {
     });
     const client = trackClient(new Client({ name: "imessage-mcp-e2e-index-overlap", version: "1.0.0" }));
     await client.connect(transport);
-    const indexState = async () => (structuredData(await client.callTool({ name: "server_status", arguments: {} })) as {
-      index_state: { state: string };
-    }).index_state.state;
-    // First response triggers the background warm. The preload then holds the
-    // build, so "ready before the request ran" cannot satisfy the assertions.
-    await indexState();
+    const indexState = async () => (structuredData(await callToolWithContract(client,
+      { name: "server_status", arguments: {} }, { timeout: 5_000 },
+    )) as { index_state: { state: string } }).index_state.state;
+    const searchLastMessage = () => callToolWithContract(client, {
+      name: "search_messages", arguments: { query: "bulk message 59999", mode: "exact" },
+    });
+    // With warmup off, search is the very first tool call. With it on, a
+    // status response triggers warmup. Both must pause at the real build gate.
+    const coldSearch = start === "cold search" ? searchLastMessage() : undefined;
+    void coldSearch?.catch(() => undefined);
+    if (!coldSearch) await indexState();
     try {
       await expect.poll(() => existsSync(path.join(gate, "entered")), { timeout: 10_000 }).toBe(true);
       expect(await indexState()).toBe("building");
@@ -838,7 +843,7 @@ describe("concurrency during the first search-index build", () => {
       // A date filter bypasses the conversation cache. Validate the fixture
       // chat and check that the index is still building after a real query.
       const started = performance.now();
-      const listed = await client.callTool({
+      const listed = await callToolWithContract(client, {
         name: "list_conversations", arguments: { limit: 10, date_from: "2000-01-01" },
       }, { timeout: 5_000 });
       const elapsed = performance.now() - started;
@@ -850,11 +855,37 @@ describe("concurrency during the first search-index build", () => {
     }
 
     await expect.poll(indexState, { timeout: 20_000 }).toBe("ready");
-    const search = structuredData(await client.callTool({
-      name: "search_messages", arguments: { query: "bulk message 59999", mode: "exact" },
-    }));
+    const search = structuredData(await (coldSearch ?? searchLastMessage()));
     expect(search.results).toEqual([expect.objectContaining({ message_id: 259_999, chat_ids: [1] })]);
   }, 60_000);
+
+  it("keeps invalid input cold and preserves strict / partial search on a damaged archive", async () => {
+    const fixture = trackFixture(createFixture());
+    const db = new Database(fixture.databasePath);
+    try {
+      db.prepare("UPDATE message SET text=NULL, attributedBody=? WHERE ROWID=1").run(Buffer.from("malformed search body"));
+      db.prepare("UPDATE chat SET display_name='Partial Search Match' WHERE ROWID IN (1, 2)").run();
+    } finally {
+      db.close();
+    }
+    const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
+    const run = (args: Record<string, unknown>) => callToolWithContract(client, { name: "search_messages", arguments: args });
+    const invalid = await run({ query: "   " });
+    expect(structuredError(invalid).reason).toBe("INVALID_INPUT");
+    const before = structuredData(await callToolWithContract(client, { name: "server_status", arguments: {} }));
+    expect(before.index_state).toMatchObject({ state: "cold", indexed_messages: 0 });
+
+    const args = { query: "Partial Search Match", mode: "exact", scopes: ["conversation_names"] };
+    const strict = await run(args);
+    expect(structuredError(strict).reason).toBe("DECODE_FAILED");
+    const partial = await run({ ...args, allow_partial: true });
+    expect(structuredData(partial).results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message_id: 1, row_status: "partial" }),
+    ]));
+    expect(partial.structuredContent).toMatchObject({
+      warnings: expect.arrayContaining([expect.objectContaining({ code: "DECODE_FAILED", skipped_count: 1 })]),
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

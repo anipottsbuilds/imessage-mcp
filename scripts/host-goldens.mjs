@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Optional interactive Claude Code check. Only generated local fixtures are used.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync,
+  openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +13,10 @@ import { fileURLToPath } from "node:url";
 const script = fileURLToPath(import.meta.url);
 const repo = path.dirname(path.dirname(script));
 const phrase = "The purple telescope is in locker cobalt.";
+// MCP hosts may scrub TMPDIR on spawn, so use the same canonical root in both processes.
+const tempRoot = realpathSync("/tmp");
+const casePrefix = "imessage-host-golden-";
+const traceLimit = { bytes: 32 * 1024, records: 200 };
 const prefix = "Return only a JSON object with a matches array of {message_id,chat_id}. No prose. ";
 export const cases = {
   "new-ask": {
@@ -91,7 +97,8 @@ export function score(name, answer, trace) {
   );
   const skillRead = trace.some(x => x.method === "resources/read" && x.uri === `skill://${test.skill}/SKILL.md`);
   const calls = trace.filter(x => x.method === "tools/call");
-  const safe = calls.length > 0 && calls.every(x => readTools.has(x.tool));
+  const safe = !trace.some(x => x.method === "trace_overflow") &&
+    calls.length > 0 && calls.every(x => readTools.has(x.tool));
   const behavior = name === "specific-chat"
     ? calls.some(x => x.tool === "search_messages" && x.mode === "exact") &&
       !calls.some(x => x.tool === "search_messages" && x.has_person_filter === true) &&
@@ -103,62 +110,128 @@ export function score(name, answer, trace) {
     read_only_tools: safe, required_behavior: behavior };
 }
 
+function privateFile(file, flags, maximum) {
+  const fd = openSync(file, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.nlink !== 1 || stat.size > maximum) {
+    closeSync(fd);
+    throw new Error("Expected a bounded, private golden fixture file.");
+  }
+  return fd;
+}
+
+function readBounded(fd, maximum) {
+  // Never read until EOF: another process might be appending to this file.
+  const buffer = Buffer.alloc(maximum + 1);
+  const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+  if (bytes > maximum) throw new Error("Golden fixture file exceeds the size limit.");
+  return buffer.toString("utf8", 0, bytes);
+}
+
+function caseDirectory(directory) {
+  const dir = path.resolve(directory);
+  const stat = lstatSync(dir);
+  if (path.dirname(dir) !== tempRoot || realpathSync(dir) !== dir ||
+      !/^imessage-host-golden-[A-Za-z0-9]{6}$/u.test(path.basename(dir)) ||
+      !stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o077)) {
+    throw new Error("Expected a private directory created by host-goldens prepare.");
+  }
+  const fd = privateFile(path.join(dir, "case.txt"), constants.O_RDONLY, 32);
+  let name;
+  try { name = readBounded(fd, 32); } finally { closeSync(fd); }
+  if (!Object.hasOwn(cases, name)) throw new Error("Unknown golden case.");
+  return { dir, name };
+}
+
 function prepare(name) {
   if (!Object.hasOwn(cases, name)) throw new Error("Unknown golden case.");
-  const tmp = mkdtempSync(path.join(tmpdir(), "imessage-host-golden-"));
-  const database = path.join(tmp, "golden-chat.db");
-  const trace = path.join(tmp, "trace.jsonl");
-  buildFixture(name, database);
-  writeFileSync(trace, "", { mode: 0o600 });
-  const config = { mcpServers: { imessage: {
-    type: "stdio", command: process.execPath, args: [script, "relay", tmp],
-  } } };
-  writeFileSync(path.join(tmp, "mcp.json"), JSON.stringify(config), { mode: 0o600 });
+  const tmp = mkdtempSync(path.join(tempRoot, casePrefix));
+  writeFileSync(path.join(tmp, "trace.jsonl"), "", { mode: 0o600 });
   writeFileSync(path.join(tmp, "case.txt"), name, { mode: 0o600 });
   console.log(tmp);
 }
 
-function relay(dir) {
-  // The relay accepts only the database next to a known case marker, never a caller-supplied archive.
-  const name = readFileSync(path.join(dir, "case.txt"), "utf8");
-  if (!Object.hasOwn(cases, name) || !path.basename(dir).startsWith("imessage-host-golden-")) {
-    throw new Error("Expected a prepared synthetic fixture.");
+const skillUris = new Set(Object.values(cases).map(test => `skill://${test.skill}/SKILL.md`));
+const searchModes = new Set(["exact", "phrase", "substring", "token"]);
+const positiveId = value => Number.isSafeInteger(value) && value > 0 ? value : undefined;
+export function traceRecord(request) {
+  const method = request?.method;
+  if (method === "skills/list" || method === "skills/get") return { method };
+  if (method === "resources/read") {
+    const uri = request.params?.uri;
+    return { method, ...(skillUris.has(uri) ? { uri } : {}) };
   }
+  if (method !== "tools/call") return undefined;
+  const args = request.params?.arguments;
+  const record = { method, tool: readTools.has(request.params?.name) ? request.params.name : "unexpected" };
+  if (args && typeof args === "object") {
+    if (searchModes.has(args.mode)) record.mode = args.mode;
+    if (typeof args.replied === "boolean") record.replied = args.replied;
+    if (positiveId(args.chat_id)) record.chat_id = args.chat_id;
+    if (positiveId(args.around_message_id)) record.around_message_id = args.around_message_id;
+    if (["person", "contact", "participant", "sender"].some(key => Object.hasOwn(args, key))) {
+      record.has_person_filter = true;
+    }
+  }
+  return record;
+}
+
+function relay(directory) {
+  const { dir, name } = caseDirectory(directory);
   const bundled = path.join(repo, "bin", "imessage-mcp.js");
   if (!existsSync(path.join(repo, "dist", "cli.js"))) throw new Error("Run npm run build first.");
-  const server = spawn(process.execPath, [bundled, "--database", path.join(dir, "golden-chat.db"), "--contacts", "none"], {
+  const fd = privateFile(path.join(dir, "trace.jsonl"), constants.O_WRONLY | constants.O_APPEND, 0);
+  const owned = mkdtempSync(path.join(tempRoot, "imessage-golden-db-"));
+  const database = path.join(owned, "synthetic.db");
+  try { buildFixture(name, database); }
+  catch (error) { closeSync(fd); rmSync(owned, { recursive: true }); throw error; }
+  const server = spawn(process.execPath, [bundled, "--database", database, "--contacts", "none"], {
     env: { ...process.env, IMESSAGE_UPDATE_CHECK: "0", IMESSAGE_CACHE: "0" },
     stdio: ["pipe", "pipe", "inherit"],
   });
   server.stdout.pipe(process.stdout);
   const input = readline.createInterface({ input: process.stdin });
+  const overflow = '{"method":"trace_overflow"}\n';
+  let records = 0, bytes = 0, limited = false;
   input.on("line", line => {
     let request;
     try { request = JSON.parse(line); } catch { /* The actual server handles malformed input. */ }
-    const method = request?.method;
-    if (["skills/list", "skills/get", "resources/read", "tools/call"].includes(method)) {
-      const args = request.params?.arguments ?? {};
-      const row = { method, uri: request.params?.uri, tool: request.params?.name, mode: args.mode,
-        replied: args.replied, chat_id: args.chat_id, around_message_id: args.around_message_id,
-        has_person_filter: ["person", "contact", "participant", "sender"].some(key => Object.hasOwn(args, key)) };
-      appendFileSync(path.join(dir, "trace.jsonl"), JSON.stringify(row) + "\n");
+    const row = traceRecord(request);
+    if (row && !limited) {
+      const entry = JSON.stringify(row) + "\n";
+      const size = Buffer.byteLength(entry);
+      if (records + 1 >= traceLimit.records || bytes + size + overflow.length > traceLimit.bytes) {
+        appendFileSync(fd, overflow);
+        limited = true;
+      } else {
+        appendFileSync(fd, entry);
+        records += 1;
+        bytes += size;
+      }
     }
     server.stdin.write(line + "\n");
   });
   input.on("close", () => server.stdin.end());
   server.on("error", () => { process.exitCode = 1; input.close(); });
-  server.on("exit", code => { process.exitCode = code ?? 1; input.close(); });
+  server.once("close", code => {
+    input.close();
+    closeSync(fd);
+    rmSync(owned, { recursive: true });
+    process.exitCode = code ?? 1;
+  });
 }
 
-function launch(dir) {
-  const name = readFileSync(path.join(dir, "case.txt"), "utf8");
+function launch(directory) {
+  const { dir, name } = caseDirectory(directory);
   const test = cases[name];
-  if (!test) throw new Error("Unknown golden case.");
   const command = `/imessage:${test.skill} ${test.prompt}`;
   console.log("Type the following as the first prompt in the interactive session:\n" + command);
   const allowed = [...readTools].map(tool => `mcp__imessage__${tool}`);
+  const config = { mcpServers: { imessage: {
+    type: "stdio", command: process.execPath, args: [script, "relay", dir],
+  } } };
   const child = spawn(process.env.IMESSAGE_GOLDEN_CLAUDE || "claude", [
-    "--strict-mcp-config", "--mcp-config", path.join(dir, "mcp.json"),
+    "--strict-mcp-config", "--mcp-config", JSON.stringify(config),
     "--setting-sources", "", "--tools", "Skill", "--permission-mode", "manual",
     "--allowedTools", ...allowed,
   ], { cwd: dir, stdio: "inherit" });
@@ -172,8 +245,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === script) {
   else if (action === "relay") relay(value);
   else if (action === "launch") launch(value);
   else if (action === "score") {
-    const name = readFileSync(path.join(value, "case.txt"), "utf8");
-    const trace = readFileSync(path.join(value, "trace.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+    const { dir, name } = caseDirectory(value);
+    const fd = privateFile(path.join(dir, "trace.jsonl"), constants.O_RDONLY, traceLimit.bytes);
+    let trace;
+    try { trace = readBounded(fd, traceLimit.bytes).trim().split("\n").filter(Boolean).map(JSON.parse); }
+    finally { closeSync(fd); }
+    if (trace.length > traceLimit.records) throw new Error("Golden trace exceeds the record limit.");
     const answer = JSON.parse(readFileSync(answerPath, "utf8"));
     const result = score(name, answer, trace);
     console.log(JSON.stringify(result));

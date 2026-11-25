@@ -546,11 +546,11 @@ export class LocalToolRuntime {
     return chatIds.map((id) => labels.get(id)).find(Boolean);
   }
 
-  private async searchMessages(params: ToolParams, privacy: PrivacyMode): Promise<CallToolResult> {
+  private searchInput(params: ToolParams, privacy: PrivacyMode): Parameters<MemorySearchIndex["search"]>[0] {
     const query = optionalString(params, "query") ?? "";
     if (!query.length) throw new ImessageMcpError("INVALID_INPUT", "search query must not be empty");
     const bounds = compileDateBounds(dateInput(params));
-    const result = await this.search.search({
+    return {
       query,
       mode: params.mode as "substring" | "exact" | "token" | "phrase",
       scopes: params.scopes as Array<"text" | "conversation_names" | "attachment_filenames">,
@@ -562,14 +562,29 @@ export class LocalToolRuntime {
       cursor: optionalString(params, "cursor"),
       allowPartial: Boolean(params.allow_partial),
       privacy,
-    });
+    };
+  }
+
+  async prepareColdSearch(params: ToolParams): Promise<CallToolResult | undefined> {
+    let privacy = this.config.privacy_ceiling;
+    try {
+      privacy = requestedPrivacy(this.config, params);
+      await this.search.prepareColdSearch(this.searchInput(params, privacy));
+    } catch (error) {
+      return errorResult("search_messages", error, privacy, this.maskingKey);
+    }
+  }
+
+  private async searchMessages(params: ToolParams, privacy: PrivacyMode): Promise<CallToolResult> {
+    const input = this.searchInput(params, privacy);
+    const result = await this.search.search(input);
     return successResult({
       tool: "search_messages",
       privacy,
       maskingKey: this.maskingKey,
       effectiveScope: {
         privacy_mode: privacy,
-        timezone: bounds.timezone,
+        timezone: input.bounds.timezone,
         scopes: params.scopes,
         service_family: params.service_family ?? "all",
         from_me: typeof params.from_me === "boolean" ? params.from_me : "all",

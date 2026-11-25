@@ -10,8 +10,8 @@ wrong outcomes and missing or misdirected calls. They do not invoke any model in
 Use Node 24.16+ and Claude Code 2.1.331+ with Skills over MCP available in your authenticated,
 interactive first-party session. The host uses its existing model account; **only the generated
 fictional fixture** is supplied. The host may retain synthetic session history as usual.
-Do not point this harness at the real Messages database, edit the generated MCP configuration, or add
-other MCP servers or tools. Do not use `claude -p`: Claude does not support these skills in that mode.
+The launcher supplies its MCP configuration directly, and the relay creates and owns a fresh fixture
+database. Do not add other MCP servers or tools. Do not use `claude -p`: Claude does not support these skills in that mode.
 
 ```sh
 npm run build
@@ -41,6 +41,7 @@ trace as a pass. Remove the generated fixture directory when finished.
 | `cancelled-ask` | Same conversation, plus one cancellation. Remove that ask and retain the other. |
 | `specific-chat` | Identical phrase from two senders, with one message shared across two chats. Verify the requested sender and right membership. |
 
-The trace records selected request fields, never text, response bodies, or search terms. This optional
+The trace records only allowlisted request metadata, never text, response bodies, or search terms.
+It is bounded to 200 records and 32 KiB; an exceeded limit fails scoring. This optional
 test measures model behavior, which can vary. Keep deterministic protocol and synthetic privacy
 coverage as the release gate while collecting enough repeated host results to assess stability.

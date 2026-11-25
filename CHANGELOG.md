@@ -9,6 +9,7 @@ this file follows [keep a changelog](https://keepachangelog.com/en/1.1.0/), and 
 ### fixed
 
 - keep latest-message previews inside the requested conversation date and service filters.
+- let metadata calls proceed while the first text search builds a cold index.
 - describe chronological conversation pages accurately and consistently handle an unavailable message anchor in the selected conversation.
 - clarify how `find-it` verifies people without sending unsupported search filters. Existing approvals for this skill may prompt again because its instructions changed.
 

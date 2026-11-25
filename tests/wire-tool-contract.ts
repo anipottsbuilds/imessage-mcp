@@ -4,6 +4,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/
 
 type WireClient = Pick<Client, "listTools" | "callTool">;
 type ToolRequest = Parameters<WireClient["callTool"]>[0];
+type ToolOptions = Parameters<WireClient["callTool"]>[1];
 type OutputValidator = ReturnType<AjvJsonSchemaValidator["getValidator"]>;
 
 const validators = new AjvJsonSchemaValidator();
@@ -27,10 +28,10 @@ function toolCatalog(client: WireClient): Promise<Map<string, OutputValidator>> 
 
 // Do not rely on the MCP SDK's implicit successful-response validation: it is
 // cache-dependent, and the SDK intentionally skips output schemas for isError.
-export async function callToolWithContract(client: WireClient, request: ToolRequest) {
+export async function callToolWithContract(client: WireClient, request: ToolRequest, options?: ToolOptions) {
   const validator = (await toolCatalog(client)).get(request.name);
   if (!validator) throw new Error(`${request.name}: tool was not advertised`);
-  const result = await client.callTool(request);
+  const result = await client.callTool(request, options);
   const output = result.structuredContent;
   const validation = validator(output);
   if (!validation.valid) {
@@ -47,9 +48,9 @@ export async function callToolWithContract(client: WireClient, request: ToolRequ
   const first = result.content[0];
   if (first?.type !== "text") throw new Error(`${request.name}: missing text fallback`);
   if (result.isError === true) {
-    const reason = (output as { error: { reason: string } }).error.reason;
-    if (typeof reason !== "string" || !first.text.startsWith(`${request.name}: error ${reason}: `)) {
-      throw new Error(`${request.name}: error text fallback disagrees with the structured reason`);
+    const { reason, message } = (output as { error: { reason: string; message: string } }).error;
+    if (typeof reason !== "string" || typeof message !== "string" || first.text !== `${request.name}: error ${reason}: ${message}`) {
+      throw new Error(`${request.name}: error text fallback disagrees with the structured error`);
     }
   } else {
     let decoded: unknown;

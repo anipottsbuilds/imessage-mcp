@@ -374,10 +374,11 @@ export class ToolRuntime {
 
   async call(tool: string, params: Record<string, unknown>): Promise<CallToolResult> {
     const started = Date.now();
-    let result: CallToolResult;
+    let result: CallToolResult | undefined;
     try {
       const local = this.open();
-      if (tool === "search_messages" && local.search.state().state === "building") {
+      const searchState = tool === "search_messages" ? local.search.state().state : undefined;
+      if (searchState === "building") {
         const ready = await local.search.waitForBuild(BUILD_WAIT_MS);
         if (!ready) {
           const progress = local.search.state().progress ?? 0;
@@ -387,9 +388,15 @@ export class ToolRuntime {
           });
         }
       }
-      const run = this.queue.then(() => local.call(tool, params));
-      this.queue = run.catch(() => undefined);
-      result = await run;
+      // An initial search can arrive before warmup (or with warmup disabled).
+      // Prepare its index outside the shared query queue so cheap metadata
+      // requests can proceed. Cursor reads and all result work stay queued.
+      if (searchState === "cold" && params.cursor === undefined) result = await local.prepareColdSearch(params);
+      if (!result) {
+        const run = this.queue.then(() => local.call(tool, params));
+        this.queue = run.catch(() => undefined);
+        result = await run;
+      }
     } catch (error) {
       const privacy = this.config.privacy_ceiling;
       result = errorResult(tool, error, privacy, this.local?.maskingKey ?? this.fallbackMaskingKey);

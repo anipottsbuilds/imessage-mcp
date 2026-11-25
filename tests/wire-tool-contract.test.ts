@@ -3,7 +3,7 @@ import { callToolWithContract } from "./wire-tool-contract.js";
 
 const name = "synthetic_tool";
 const success = { content: [{ type: "text", text: '{"data":{"count":2}}' }], structuredContent: { data: { count: 2 } } };
-const error = { content: [{ type: "text", text: "synthetic_tool: error INVALID_INPUT: invalid value" }], isError: true, structuredContent: { error: { reason: "INVALID_INPUT" } } };
+const error = { content: [{ type: "text", text: "synthetic_tool: error INVALID_INPUT: invalid value" }], isError: true, structuredContent: { error: { reason: "INVALID_INPUT", message: "invalid value" } } };
 const outputSchema = {
   type: "object",
   anyOf: [
@@ -52,7 +52,7 @@ it("rejects a different JSON text fallback even when the structured result is va
   await expect(callToolWithContract(syntheticClient(reply), { name })).rejects.toThrow("success fallback differs");
 });
 
-it("rejects an error fallback with the wrong reason", async () => {
-  const reply = { ...error, content: [{ type: "text", text: "synthetic_tool: error NOT_FOUND: no match" }] };
+it.each(["synthetic_tool: error NOT_FOUND: no match", "synthetic_tool: error INVALID_INPUT: wrong message"])("rejects an error fallback with the wrong reason or message", async (text) => {
+  const reply = { ...error, content: [{ type: "text", text }] };
   await expect(callToolWithContract(syntheticClient(reply), { name })).rejects.toThrow("error text fallback disagrees");
 });
