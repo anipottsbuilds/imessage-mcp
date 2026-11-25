@@ -752,6 +752,25 @@ describe("2.0 data and query core", () => {
     }
   });
 
+  it.each([
+    ["service", { service_family: "sms" }, 4],
+    ["date", { date_from: "2026-03-08", date_to: "2026-03-08" }, 4],
+    ["service and date", { service_family: "imessage", date_from: "2026-03-08", date_to: "2026-03-08" }, 3],
+  ] as const)("uses the latest message within the requested %s scope", async (_scope, filters, messageId) => {
+    const isolated = createFixture();
+    const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
+    try {
+      const result = await runtime.call("list_conversations", { ...filters, contact: "+15550000001", timezone: "UTC", privacy_mode: "full" });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ data: { conversations: [
+        { chat_id: 1, latest_message: { message_id: messageId, direction: "outgoing" } },
+      ] } });
+    } finally {
+      runtime.close();
+      isolated.cleanup();
+    }
+  });
+
   it("breaks message counts down by local hour and weekday", async () => {
     const isolated = createFixture();
     const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
@@ -929,6 +948,14 @@ describe("2.0 data and query core", () => {
       isolatedContext.close();
       isolated.cleanup();
     }
+  });
+
+  it("returns a conversation-scoped recovery error for an unavailable anchor", async () => {
+    await expect(getConversationEvents({
+      context, contacts, decoder, chatIds: [1, 2], limit: 10, aroundMessage: 999_999,
+      bounds: compileDateBounds({ timezone: "UTC" }), allowPartial: false, privacy: "full",
+      includeAttachmentPaths: false,
+    })).rejects.toMatchObject({ reason: "INVALID_INPUT", message: "around_message_id was not found in this conversation" });
   });
 
   it("returns newest-selected events chronologically with visible-state lifecycle folding", async () => {

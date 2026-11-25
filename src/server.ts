@@ -481,7 +481,7 @@ export function registerTools(server: McpServer, runtime: ToolRuntime): void {
     "get_conversation",
     {
       title: "Get conversation",
-      description: "Read a conversation from your local Apple Messages database by chat_id or by contact or group name, including message edits, tapback reactions, read receipts, replies, group events, and attachment references. Returns the newest events first; pass the cursor for older ones, or around_message_id to open at a search result. Read-only: no messages are sent, edited, or marked read.",
+      description: "Read a conversation from your local Apple Messages database by chat_id or by contact or group name, including message edits, tapback reactions, read receipts, replies, group events, and attachment references. Within each page, events are ordered oldest to newest. The first page contains the newest events unless around_message_id is set. Pass the cursor for older pages, or around_message_id to open at a search result. Read-only: no messages are sent, edited, or marked read.",
       inputSchema: recoverInvalidInput(z.object({
         chat_id: idSchema.optional()
           .describe("Conversation id from list_conversations or search results. Use this to select one conversation when a person has multiple threads. Provide chat_id or query, never both."),
