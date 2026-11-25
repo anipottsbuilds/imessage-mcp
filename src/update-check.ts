@@ -89,17 +89,20 @@ export async function checkForUpdate(
       inflight = null;
       return latest;
     });
-    // A slow registry must not hold up the tool; the lookup keeps running and
-    // the next call reads its result.
-    let timer: NodeJS.Timeout | undefined;
-    await Promise.race([
-      inflight,
-      new Promise((resolve) => {
-        timer = setTimeout(resolve, options.waitMs ?? WAIT_MS);
-        timer.unref();
-      }),
-    ]);
-    clearTimeout(timer);
+    // Doctor waits briefly for the first answer; server_status just starts
+    // the same lookup and returns cached/unknown without waiting on I/O.
+    const waitMs = options.waitMs ?? WAIT_MS;
+    if (waitMs > 0) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        inflight,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, waitMs);
+          timer.unref();
+        }),
+      ]);
+      clearTimeout(timer);
+    }
   }
   const latest = cached && cached.expires > now() ? cached.latest : null;
   if (!latest) return { status: "unknown", current_version: currentVersion };

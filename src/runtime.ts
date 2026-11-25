@@ -376,7 +376,8 @@ export class LocalToolRuntime {
   }
 
   private async serverStatus(privacy: PrivacyMode): Promise<CallToolResult> {
-    const update = await checkForUpdate(packageJson.version);
+    // An uncached npm lookup must not hold up this tool's shared query lane.
+    const update = await checkForUpdate(packageJson.version, { waitMs: 0 });
     const request = this.database.request();
     try {
       const detectedServices = this.detectedServices(request);
@@ -445,11 +446,16 @@ export class LocalToolRuntime {
       privacy,
       catalog: this.conversationCatalog,
     });
-    // Each conversation carries its latest message, so "who is waiting on me"
-    // takes one call instead of one get_conversation per thread.
+    // Only full and redacted lists expose previews. Aggregate counts come
+    // from the conversation summaries and need no additional message reads.
     const conversations = [];
+    let incompletePreviews = 0;
     for (const [index, conversation] of listed.conversations.entries()) {
-      const latest = await getConversationEvents({
+      if (privacy === "aggregate") {
+        conversations.push(conversation);
+        continue;
+      }
+      const preview = await getConversationEvents({
         context: this.database,
         contacts: this.contacts,
         decoder: this.decoder,
@@ -461,7 +467,9 @@ export class LocalToolRuntime {
         allowPartial: true,
         privacy,
         includeAttachmentPaths: false,
-      }).then((result) => result.events.at(-1), () => undefined);
+      }).catch(() => undefined);
+      const latest = preview?.events.at(-1);
+      if (!preview || preview.warnings.length || latest?.row_status === "partial") incompletePreviews += 1;
       conversations.push(latest ? {
         ...conversation,
         latest_message: {
@@ -485,6 +493,9 @@ export class LocalToolRuntime {
       },
       data: { conversations },
       page: { next_cursor: listed.nextCursor, has_more: listed.hasMore, as_of: listed.asOf },
+      warnings: incompletePreviews > 0
+        ? [{ code: "PARTIAL_PREVIEWS", message: "some latest message previews could not be fully read", skipped_count: incompletePreviews }]
+        : undefined,
     });
   }
 
