@@ -752,6 +752,107 @@ describe("2.0 data and query core", () => {
     }
   });
 
+  it.each([
+    ["service", { service_family: "sms" }, 4],
+    ["date", { date_from: "2026-03-08", date_to: "2026-03-08" }, 4],
+    ["service and date", { service_family: "imessage", date_from: "2026-03-08", date_to: "2026-03-08" }, 3],
+  ] as const)("uses the latest message within the requested %s scope", async (_scope, filters, messageId) => {
+    const isolated = createFixture();
+    const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
+    try {
+      const result = await runtime.call("list_conversations", { ...filters, contact: "+15550000001", timezone: "UTC", privacy_mode: "full" });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ data: { conversations: [
+        { chat_id: 1, latest_message: { message_id: messageId, direction: "outgoing" } },
+      ] } });
+    } finally {
+      runtime.close();
+      isolated.cleanup();
+    }
+  });
+
+  it.each(["full", "redacted"] as const)("reports partial latest previews safely in %s mode", async (privacy) => {
+    const isolated = createFixture();
+    const db = new Database(isolated.databasePath);
+    db.prepare("UPDATE message SET text=NULL, attributedBody=? WHERE ROWID=20").run(Buffer.from("fixture-only malformed preview body"));
+    db.close();
+    const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
+    try {
+      const result = await runtime.call("list_conversations", { limit: 1, privacy_mode: privacy });
+      expect(result.isError).not.toBe(true);
+      const envelope = result.structuredContent!;
+      expect(envelope).toMatchObject({
+        completeness: "partial",
+        warnings: [{ code: "PARTIAL_PREVIEWS", message: "some latest message previews could not be fully read", skipped_count: 1 }],
+        data: { conversations: [{ chat_id: 1, latest_message: { message_id: 20, direction: "incoming" } }] },
+        page: { has_more: true },
+      });
+      expect(JSON.stringify(result)).not.toContain("fixture-only malformed preview body");
+      expect((result.content[0] as { text: string }).text).toBe(JSON.stringify(envelope));
+    } finally {
+      runtime.close();
+      isolated.cleanup();
+    }
+  });
+
+  it("counts an unreadable latest preview without disclosing the read error or dropping its conversation", async () => {
+    const isolated = createFixture();
+    const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
+    const request = runtime.database.request.bind(runtime.database);
+    const spy = vi.spyOn(runtime.database, "request")
+      .mockImplementationOnce(request)
+      .mockImplementationOnce(() => { throw new Error("fixture-only private read failure"); });
+    try {
+      const result = await runtime.call("list_conversations", { limit: 1, privacy_mode: "full" });
+      expect(result.isError).not.toBe(true);
+      const envelope = result.structuredContent!;
+      expect(envelope).toMatchObject({
+        completeness: "partial",
+        warnings: [{ code: "PARTIAL_PREVIEWS", skipped_count: 1 }],
+        data: { conversations: [{ chat_id: 1 }] },
+        page: { has_more: true },
+      });
+      expect(envelope).not.toHaveProperty("data.conversations.0.latest_message");
+      expect(JSON.stringify(result)).not.toContain("fixture-only private read failure");
+    } finally {
+      spy.mockRestore();
+      runtime.close();
+      isolated.cleanup();
+    }
+  });
+
+  it("preserves aggregate page counts and pagination without reading any previews", async () => {
+    const isolated = createFixture();
+    const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
+    const spy = vi.spyOn(runtime.database, "request");
+    try {
+      const first = await runtime.call("list_conversations", { limit: 1, privacy_mode: "aggregate" });
+      const firstPage = first.structuredContent as { page: { as_of: string; next_cursor: string } };
+      expect(first.structuredContent).toMatchObject({
+        completeness: "complete",
+        data: { conversation_count: 1, by_kind: { direct: 1 }, by_service: { imessage: 1, sms: 1 } },
+        page: { has_more: true, next_cursor: expect.any(String) },
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(first.structuredContent).not.toHaveProperty("data.conversations");
+      expect(first.structuredContent).not.toHaveProperty("warnings");
+      const second = await runtime.call("list_conversations", {
+        limit: 1, privacy_mode: "aggregate", cursor: firstPage.page.next_cursor,
+      });
+      expect(second.structuredContent).toMatchObject({
+        completeness: "complete",
+        data: { conversation_count: 1, by_kind: { group: 1 }, by_service: { rcs: 1 } },
+        page: { has_more: true, as_of: firstPage.page.as_of },
+      });
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify([first, second])).not.toMatch(/latest_message|the exact phrase lives here|\+15550000001/u);
+    } finally {
+      spy.mockRestore();
+      runtime.close();
+      isolated.cleanup();
+    }
+  });
+
   it("breaks message counts down by local hour and weekday", async () => {
     const isolated = createFixture();
     const runtime = new LocalToolRuntime(runtimeConfig({ transport: "stdio", databasePath: isolated.databasePath, contacts: "none" }));
@@ -929,6 +1030,14 @@ describe("2.0 data and query core", () => {
       isolatedContext.close();
       isolated.cleanup();
     }
+  });
+
+  it("returns a conversation-scoped recovery error for an unavailable anchor", async () => {
+    await expect(getConversationEvents({
+      context, contacts, decoder, chatIds: [1, 2], limit: 10, aroundMessage: 999_999,
+      bounds: compileDateBounds({ timezone: "UTC" }), allowPartial: false, privacy: "full",
+      includeAttachmentPaths: false,
+    })).rejects.toMatchObject({ reason: "INVALID_INPUT", message: "around_message_id was not found in this conversation" });
   });
 
   it("returns newest-selected events chronologically with visible-state lifecycle folding", async () => {

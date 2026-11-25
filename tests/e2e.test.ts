@@ -4,23 +4,15 @@
 // Messages/Contacts: every server this file launches gets `--database
 // <fixture copy>` and `--contacts none`.
 //
-// Output-schema validation: the v2 `@modelcontextprotocol/client` package
-// validates a tool's `structuredContent` against its own advertised
-// `outputSchema` inside `callTool()` and throws a `ProtocolError` if it does
-// not match (see `Client.prototype.callTool` in
-// node_modules/@modelcontextprotocol/client/dist/index.mjs). This suite
-// relies on that behavior instead of shipping a second JSON Schema validator:
-// any `callTool()` call below that resolves without throwing, for a result
-// with `isError` unset, has already been checked against the schema the
-// server itself advertised over the wire.
-//
+// Behavioral tool calls check the success or error envelope against the
+// advertised wire schema, independently of SDK discovery/cache state.
 // Assumes `npm run build` has already produced dist/. Run with:
 //   npm run build && npx vitest run --config vitest.e2e.config.ts
 
 import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, copyFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, copyFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -28,10 +20,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client, StreamableHTTPClientTransport, type ClientOptions } from "@modelcontextprotocol/client";
 import { SKILLS_EXTENSION_ID, SkillsClient } from "@modelcontextprotocol/client/ext/skills";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import Database from "../src/sqlite.js";
 import { appleNanoseconds, createFixture, type Fixture } from "./fixture.js";
+import { callToolWithContract } from "./wire-tool-contract.js";
 
 // ---------------------------------------------------------------------------
 // Paths, build guard, and shared fixtures
@@ -374,6 +366,12 @@ describe("server-provided workflow skills", () => {
     expect(client.getNegotiatedProtocolVersion()).toBe(revision);
     await assertWorkflowSkills(client, serverRoot, modern);
     expect((await client.listTools()).tools.map(({ name }) => name).sort()).toEqual(TOOL_NAMES);
+    const status = structuredData(await callToolWithContract(client, { name: "server_status", arguments: {} }));
+    expect(status.package_version).toBe(packageVersion);
+    const failure = structuredError(await callToolWithContract(client, {
+      name: "server_status", arguments: { unknown_field: true },
+    }));
+    expect(failure.reason).toBe("INVALID_INPUT");
     expect((await client.listPrompts()).prompts.map(({ name }) => name).sort()).toEqual(["catch_up", "draft_reply", "recap"]);
     expect((await client.listResources()).resources.map(({ uri }) => uri)).toContain("imessage://conversations");
     expect((await client.readResource({ uri: "imessage://conversations" })).contents).toHaveLength(1);
@@ -391,14 +389,14 @@ describe("tool outputs at every privacy mode", () => {
 
     // Realistic ids, taken from the tools that produce them, per privacy full.
     const conversations = structuredData(
-      await client.callTool({ name: "list_conversations", arguments: { limit: 50, privacy_mode: "full" } }),
+      await callToolWithContract(client, { name: "list_conversations", arguments: { limit: 50, privacy_mode: "full" } }),
     ) as { conversations: Array<{ chat_id: number }> };
     expect(conversations.conversations.length).toBeGreaterThan(0);
     const chatId = conversations.conversations[0].chat_id;
     expect(chatId).toBeTypeOf("number");
 
     const conversation = structuredData(
-      await client.callTool({ name: "get_conversation", arguments: { chat_id: chatId, limit: 20, privacy_mode: "full" } }),
+      await callToolWithContract(client, { name: "get_conversation", arguments: { chat_id: chatId, limit: 20, privacy_mode: "full" } }),
     ) as { events: Array<{ message_id?: number }> };
     const messageEvent = conversation.events.find((event) => typeof event.message_id === "number");
     expect(messageEvent, "fixture conversation must contain at least one message event").toBeDefined();
@@ -417,7 +415,7 @@ describe("tool outputs at every privacy mode", () => {
     const allResults: unknown[] = [];
     for (const privacy of ["full", "redacted", "aggregate"] as const) {
       for (const [name, args] of callsFor()) {
-        const result = await client.callTool({ name, arguments: { ...args, privacy_mode: privacy } });
+        const result = await callToolWithContract(client, { name, arguments: { ...args, privacy_mode: privacy } });
         expect(result.isError, `${name} at privacy ${privacy} must succeed`).toBeUndefined();
         if (privacy === "aggregate") allResults.push(result.structuredContent);
       }
@@ -464,10 +462,10 @@ describe("shared conversation memberships over MCP", () => {
       ? connectStdio(["--database", databasePath, "--contacts", "none"])
       : connectHttp(databasePath);
     const baselineClient = await connect(baselineFixture.databasePath);
-    const baselineCounts = structuredData(await baselineClient.callTool({
+    const baselineCounts = structuredData(await callToolWithContract(baselineClient, {
       name: "analyze_communication", arguments: { metric: "message_count", scope: "global" },
     })).overall;
-    const unrelatedEvents = structuredData(await baselineClient.callTool({
+    const unrelatedEvents = structuredData(await callToolWithContract(baselineClient, {
       name: "get_conversation", arguments: { chat_id: 4, limit: 200 },
     })).events;
     const client = await connect(sharedFixture.databasePath);
@@ -476,7 +474,7 @@ describe("shared conversation memberships over MCP", () => {
     for (const allowPartial of [false, true]) {
       const results = new Map<string, Record<string, unknown>>();
       for (const [name, args] of membershipCalls(allowPartial)) {
-        const result = await client.callTool({ name, arguments: args });
+        const result = await callToolWithContract(client, { name, arguments: args });
         expect(result.isError, `${name} must succeed with allow_partial=${allowPartial}`).toBeUndefined();
         results.set(name, structuredData(result));
       }
@@ -493,7 +491,7 @@ describe("shared conversation memberships over MCP", () => {
 
       // Sharing a message must not merge the rest of either conversation.
       for (const chatId of [1, 3]) {
-        const events = structuredData(await client.callTool({
+        const events = structuredData(await callToolWithContract(client, {
           name: "get_conversation", arguments: { chat_id: chatId, limit: 200, allow_partial: allowPartial },
         })).events as Array<{ message_id?: number }>;
         expect(events.some((event) => event.message_id === 1)).toBe(true);
@@ -506,7 +504,7 @@ describe("shared conversation memberships over MCP", () => {
     // test below, whose startup privacy ceiling exercises that restriction.
     const aggregateResults: unknown[] = [];
     for (const [name, args] of membershipCalls(true).filter(([name]) => name !== "get_attachment")) {
-      const result = await client.callTool({ name, arguments: { ...args, privacy_mode: "aggregate" } });
+      const result = await callToolWithContract(client, { name, arguments: { ...args, privacy_mode: "aggregate" } });
       structuredData(result);
       aggregateResults.push(result);
     }
@@ -527,7 +525,7 @@ describe("get_attachment", () => {
     const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
     // attachment_id 1 is attached to message 7 in the fixture; its filename
     // points at a path that does not exist on this machine.
-    const data = structuredData(await client.callTool({ name: "get_attachment", arguments: { attachment_id: 1 } })) as {
+    const data = structuredData(await callToolWithContract(client, { name: "get_attachment", arguments: { attachment_id: 1 } })) as {
       content: string;
       reason?: string;
     };
@@ -538,7 +536,7 @@ describe("get_attachment", () => {
   it("is PRIVACY_RESTRICTED when the server's privacy ceiling is below full", async () => {
     const fixture = trackFixture(createFixture());
     const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none", "--privacy", "redacted"]);
-    const error = structuredError(await client.callTool({ name: "get_attachment", arguments: { attachment_id: 1 } }));
+    const error = structuredError(await callToolWithContract(client, { name: "get_attachment", arguments: { attachment_id: 1 } }));
     expect(error.reason).toBe("PRIVACY_RESTRICTED");
   });
 });
@@ -552,7 +550,7 @@ describe("sync_messages", () => {
     const fixture = trackFixture(createFixture());
     const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
 
-    const first = structuredData(await client.callTool({ name: "sync_messages", arguments: { limit: 50 } })) as { cursor: string };
+    const first = structuredData(await callToolWithContract(client, { name: "sync_messages", arguments: { limit: 50 } })) as { cursor: string };
     expect(first.cursor).toMatch(/^im3_sync_/u);
 
     const writer = new Database(fixture.databasePath);
@@ -567,7 +565,7 @@ describe("sync_messages", () => {
     }
 
     const second = structuredData(
-      await client.callTool({ name: "sync_messages", arguments: { limit: 50, cursor: first.cursor } }),
+      await callToolWithContract(client, { name: "sync_messages", arguments: { limit: 50, cursor: first.cursor } }),
     ) as { changes: Array<Record<string, unknown>> };
     const created = second.changes.find((change) => change.change_type === "message_created" && change.message_id === 500);
     expect(created, "expected a message_created change for the appended message").toBeDefined();
@@ -581,7 +579,7 @@ describe("sync_messages", () => {
     const fixture = trackFixture(createFixture());
     const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
 
-    const first = structuredData(await client.callTool({ name: "sync_messages", arguments: { limit: 50 } })) as { cursor: string };
+    const first = structuredData(await callToolWithContract(client, { name: "sync_messages", arguments: { limit: 50 } })) as { cursor: string };
 
     const writer = new Database(fixture.databasePath);
     try {
@@ -592,7 +590,7 @@ describe("sync_messages", () => {
     }
 
     const second = structuredData(
-      await client.callTool({ name: "sync_messages", arguments: { limit: 50, cursor: first.cursor } }),
+      await callToolWithContract(client, { name: "sync_messages", arguments: { limit: 50, cursor: first.cursor } }),
     ) as { changes: Array<Record<string, unknown>> };
     expect(second.changes).toContainEqual(expect.objectContaining({ change_type: "message_deleted", message_id: 2 }));
   });
@@ -629,7 +627,7 @@ describe("invalid input", () => {
   it("returns an isError result with reason INVALID_INPUT instead of a protocol-level error", async () => {
     const fixture = trackFixture(createFixture());
     const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
-    const error = structuredError(await client.callTool({ name: "server_status", arguments: { unknown_field: true } }));
+    const error = structuredError(await callToolWithContract(client, { name: "server_status", arguments: { unknown_field: true } }));
     expect(error.reason).toBe("INVALID_INPUT");
   });
 });
@@ -645,13 +643,13 @@ describe("unreadable database", () => {
     const databasePath = path.join(directory, "chat.db");
     const client = await connectStdio(["--database", databasePath, "--contacts", "none"]);
 
-    const failed = await client.callTool({ name: "list_conversations", arguments: { limit: 5 } });
+    const failed = await callToolWithContract(client, { name: "list_conversations", arguments: { limit: 5 } });
     expect(failed.isError).toBe(true);
     expect(JSON.stringify(failed.content)).toMatch(/was not found/u);
 
     copyFileSync(fixture.databasePath, databasePath);
 
-    const recovered = await client.callTool({ name: "list_conversations", arguments: { limit: 5 } });
+    const recovered = await callToolWithContract(client, { name: "list_conversations", arguments: { limit: 5 } });
     expect(recovered.isError, "the next call after the database becomes readable must succeed without a restart").toBeUndefined();
   });
 });
@@ -788,7 +786,7 @@ describe("older protocol version clients", () => {
 // ---------------------------------------------------------------------------
 
 describe("concurrency during the first search-index build", () => {
-  it("keeps list_conversations fast while a 60,000-message index builds in the background", async () => {
+  it.each(["background", "cold search"] as const)("answers an uncached conversation request during a held %s build, then completes the index", async (start) => {
     const fixture = trackFixture(createFixture());
     const writer = new Database(fixture.databasePath);
     try {
@@ -812,32 +810,82 @@ describe("concurrency during the first search-index build", () => {
       writer.close();
     }
 
-    // No IMESSAGE_WARM_SEARCH=0 here: the index build starts in the background
-    // right after the server opens the database.
-    const client = await connectStdio(
-      ["--database", fixture.databasePath, "--contacts", "none"],
-      { IMESSAGE_WARM_SEARCH: undefined },
-    );
+    const gate = trackDir(mkdtempSync(path.join(tmpdir(), "imessage-mcp-index-gate-")));
+    const preload = fileURLToPath(new URL("./fixtures/hold-index-build.mjs", import.meta.url));
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["--import", preload, binPath, "--database", fixture.databasePath, "--contacts", "none"],
+      cwd: serverRoot,
+      env: baseEnv({
+        IMESSAGE_WARM_SEARCH: start === "background" ? "1" : "0",
+        IMESSAGE_E2E_SERVER_ROOT: serverRoot,
+        IMESSAGE_E2E_INDEX_GATE: gate,
+      }),
+      stderr: "pipe",
+    });
+    const client = trackClient(new Client({ name: "imessage-mcp-e2e-index-overlap", version: "1.0.0" }));
+    await client.connect(transport);
+    const indexState = async () => (structuredData(await callToolWithContract(client,
+      { name: "server_status", arguments: {} }, { timeout: 5_000 },
+    )) as { index_state: { state: string } }).index_state.state;
+    const searchLastMessage = () => callToolWithContract(client, {
+      name: "search_messages", arguments: { query: "bulk message 59999", mode: "exact" },
+    });
+    // With warmup off, search is the very first tool call. With it on, a
+    // status response triggers warmup. Both must pause at the real build gate.
+    const coldSearch = start === "cold search" ? searchLastMessage() : undefined;
+    void coldSearch?.catch(() => undefined);
+    if (!coldSearch) await indexState();
+    try {
+      await expect.poll(() => existsSync(path.join(gate, "entered")), { timeout: 10_000 }).toBe(true);
+      expect(await indexState()).toBe("building");
 
-    // The build starts once the first call finishes; wait until it is running.
-    const indexState = async () => (structuredData(await client.callTool({ name: "server_status", arguments: {} })) as {
-      index_state: { state: string };
-    }).index_state.state;
-    let state = await indexState();
-    for (let attempt = 0; state === "cold" && attempt < 50; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      state = await indexState();
+      // A date filter bypasses the conversation cache. Validate the fixture
+      // chat and check that the index is still building after a real query.
+      const started = performance.now();
+      const listed = await callToolWithContract(client, {
+        name: "list_conversations", arguments: { limit: 10, date_from: "2000-01-01" },
+      }, { timeout: 5_000 });
+      const elapsed = performance.now() - started;
+      expect(structuredData(listed).conversations).toEqual(expect.arrayContaining([expect.objectContaining({ chat_id: 1 })]));
+      expect(elapsed, "list_conversations must stay fast while the index builds").toBeLessThan(2_000);
+      expect(await indexState()).toBe("building");
+    } finally {
+      writeFileSync(path.join(gate, "released"), "");
     }
-    expect(["building", "ready"]).toContain(state);
 
-    // A date filter bypasses the conversation cache, so this is a real query
-    // racing the build on the shared process.
-    const started = Date.now();
-    const listed = await client.callTool({ name: "list_conversations", arguments: { limit: 10, date_from: "2000-01-01" } });
-    const elapsed = Date.now() - started;
-    expect(listed.isError).toBeUndefined();
-    expect(elapsed, "list_conversations must stay fast while the index builds").toBeLessThan(2_000);
+    await expect.poll(indexState, { timeout: 20_000 }).toBe("ready");
+    const search = structuredData(await (coldSearch ?? searchLastMessage()));
+    expect(search.results).toEqual([expect.objectContaining({ message_id: 259_999, chat_ids: [1] })]);
   }, 60_000);
+
+  it("keeps invalid input cold and preserves strict / partial search on a damaged archive", async () => {
+    const fixture = trackFixture(createFixture());
+    const db = new Database(fixture.databasePath);
+    try {
+      db.prepare("UPDATE message SET text=NULL, attributedBody=? WHERE ROWID=1").run(Buffer.from("malformed search body"));
+      db.prepare("UPDATE chat SET display_name='Partial Search Match' WHERE ROWID IN (1, 2)").run();
+    } finally {
+      db.close();
+    }
+    const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
+    const run = (args: Record<string, unknown>) => callToolWithContract(client, { name: "search_messages", arguments: args });
+    const invalid = await run({ query: "   " });
+    expect(structuredError(invalid).reason).toBe("INVALID_INPUT");
+    const before = structuredData(await callToolWithContract(client, { name: "server_status", arguments: {} }));
+    expect(before.index_state).toMatchObject({ state: "cold", indexed_messages: 0 });
+
+    const args = { query: "Partial Search Match", mode: "exact", scopes: ["conversation_names"] };
+    const strict = await run(args);
+    expect(structuredError(strict).reason).toBe("DECODE_FAILED");
+    const partial = await run({ ...args, allow_partial: true });
+    expect(structuredData(partial).results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message_id: 1, row_status: "partial" }),
+    ]));
+    expect(partial.structuredContent).toMatchObject({
+      warnings: expect.arrayContaining([expect.objectContaining({ code: "DECODE_FAILED", skipped_count: 1 })]),
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -906,7 +954,7 @@ describe("mcpb bundle", () => {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual(TOOL_NAMES);
       for (const [name, args] of membershipCalls()) {
-        const result = await client.callTool({ name, arguments: args });
+        const result = await callToolWithContract(client, { name, arguments: args });
         if (name === "get_attachment" && privacy !== "full") {
           expect(structuredError(result).reason).toBe("PRIVACY_RESTRICTED");
         } else {
@@ -935,16 +983,12 @@ describe("strict client recovery (#79)", () => {
     db.close();
     const client = await connectStdio(["--database", fixture.databasePath, "--contacts", "none"]);
     const tools = (await client.listTools()).tools;
-    const validators = new AjvJsonSchemaValidator();
     for (const tool of tools) {
-      const result = await client.callTool({ name: tool.name, arguments: { unknown_field: true } });
+      const result = await callToolWithContract(client, { name: tool.name, arguments: { unknown_field: true } });
       expect(result.isError, tool.name).toBe(true);
-      expect(validators.getValidator(tool.outputSchema!)(result.structuredContent), tool.name).toMatchObject({ valid: true });
       expect(result.structuredContent).toMatchObject({ error: { reason: "INVALID_INPUT" } });
     }
-    const result = await client.callTool({ name: "get_conversation", arguments: { query: "Synthetic Twin", limit: 5 } });
-    const tool = tools.find((entry) => entry.name === "get_conversation")!;
-    expect(validators.getValidator(tool.outputSchema!)(result.structuredContent)).toMatchObject({ valid: true });
+    const result = await callToolWithContract(client, { name: "get_conversation", arguments: { query: "Synthetic Twin", limit: 5 } });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({ error: { reason: "AMBIGUOUS_CONTACT" } });
     expect(JSON.stringify(result.content)).toContain("call list_conversations");

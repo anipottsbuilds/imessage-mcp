@@ -44,6 +44,17 @@ export type SearchMode = "substring" | "exact" | "token" | "phrase";
 export type SearchScope = "text" | "conversation_names" | "attachment_filenames";
 export type SearchOrder = "newest" | "relevance";
 
+function validateSearchInput(input: { query: string; scopes: SearchScope[] }): void {
+  if (input.query.length === 0 || normalize(input.query).trim().length === 0) {
+    throw new ImessageMcpError("INVALID_INPUT", "search query must not be empty");
+  }
+  if (input.query.length > 4096) throw new ImessageMcpError("INVALID_INPUT", "search query exceeds the 4096 character limit");
+  if (input.scopes.length === 0) throw new ImessageMcpError("INVALID_INPUT", "at least one search scope is required");
+  if (input.scopes.length > 3 || new Set(input.scopes).size !== input.scopes.length) {
+    throw new ImessageMcpError("INVALID_INPUT", "search scopes must be unique and limited to the three supported scopes");
+  }
+}
+
 export interface SearchHit {
   message_id: number;
   chat_id?: number;
@@ -1527,6 +1538,14 @@ export class MemorySearchIndex {
     return { sql: conditions.join(" AND "), bindings, rank };
   }
 
+  // Read-only cold preparation runs on the dedicated index connection, not
+  // the serialized query connection. The regular search still validates the
+  // opened index against the current database before reading results.
+  async prepareColdSearch(input: { query: string; scopes: SearchScope[]; allowPartial: boolean }): Promise<void> {
+    validateSearchInput(input);
+    await this.ensure(input.allowPartial);
+  }
+
   async search(input: {
     query: string;
     mode: SearchMode;
@@ -1540,14 +1559,7 @@ export class MemorySearchIndex {
     allowPartial: boolean;
     privacy: PrivacyMode;
   }): Promise<{ hits: SearchHit[]; total: number; nextCursor: string | null; hasMore: boolean; asOf: string; warnings: Warning[] }> {
-    if (input.query.length === 0 || normalize(input.query).trim().length === 0) {
-      throw new ImessageMcpError("INVALID_INPUT", "search query must not be empty");
-    }
-    if (input.query.length > 4096) throw new ImessageMcpError("INVALID_INPUT", "search query exceeds the 4096 character limit");
-    if (input.scopes.length === 0) throw new ImessageMcpError("INVALID_INPUT", "at least one search scope is required");
-    if (input.scopes.length > 3 || new Set(input.scopes).size !== input.scopes.length) {
-      throw new ImessageMcpError("INVALID_INPUT", "search scopes must be unique and limited to the three supported scopes");
-    }
+    validateSearchInput(input);
 
     const hash = queryHash({
       query: input.query,
