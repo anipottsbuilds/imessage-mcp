@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { ToolRuntime } from "../src/server.js";
+import { createFixture } from "./fixture.js";
 import { DatabaseContext, fullDiskAccessMessage, openReadonlyDatabase } from "../src/database.js";
 import { checkForUpdate, isNewer, LATEST_BUNDLE_URL, resetUpdateCheckForTests } from "../src/update-check.js";
 
@@ -89,6 +91,62 @@ describe("update check", () => {
     });
     expect((await checkForUpdate("2.1.3", { env: { IMESSAGE_UPDATE_CHECK: "false" }, fetch })).status).toBe("disabled");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns cold status and queued metadata before a held registry lookup, then reuses its result", async () => {
+    const fixture = createFixture();
+    const runtime = new ToolRuntime({
+      database_path: fixture.databasePath,
+      source_mode: "copy",
+      contacts_mode: "none",
+      privacy_ceiling: "full",
+      transport: "stdio",
+      port: 3000,
+    });
+    let release!: (response: Response) => void;
+    const fetch = vi.fn(() => new Promise<Response>((resolve) => { release = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    vi.stubEnv("IMESSAGE_UPDATE_CHECK", "1");
+    vi.useFakeTimers();
+    const status = vi.fn();
+    const metadata = vi.fn();
+    const first = runtime.call("server_status", {}).then(status);
+    const second = runtime.call("list_conversations", { order: "recent", limit: 1 }).then(metadata);
+    try {
+      // No fake time elapses and no network response is released. Even the
+      // first status call and the metadata behind it must complete.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(status).toHaveBeenCalledWith(expect.objectContaining({
+        structuredContent: expect.objectContaining({ data: expect.objectContaining({
+          update: expect.objectContaining({ status: "unknown" }),
+        }) }),
+      }));
+      expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+        structuredContent: expect.objectContaining({ data: expect.objectContaining({
+          conversations: [expect.any(Object)],
+        }) }),
+      }));
+
+      release(new Response(JSON.stringify({ version: "99.0.0" })));
+      await vi.advanceTimersByTimeAsync(0);
+      const next = await runtime.call("server_status", {});
+      expect(next.structuredContent).toMatchObject({ data: { update: {
+        status: "available", latest_version: "99.0.0",
+      } } });
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      // In the negative-control path, unblock the original request before
+      // disposing the database and restoring global state.
+      release?.(new Response(JSON.stringify({ version: "99.0.0" })));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await Promise.allSettled([first, second]);
+      runtime.close();
+      fixture.cleanup();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("does not hold a tool on a slow registry and reads the answer on the next call", async () => {

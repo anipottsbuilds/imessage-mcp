@@ -4,6 +4,19 @@ this file follows [keep a changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ## unreleased
 
+## 3.4.1
+
+### fixed
+
+- keep latest-message previews inside the requested conversation date and service filters, and disclose partial previews without exposing underlying errors.
+- let metadata calls proceed during the first cold search index build and an uncached version lookup.
+- describe chronological conversation pages accurately and consistently handle an unavailable message anchor in the selected conversation.
+- clarify how `find-it` verifies people without sending unsupported search filters. Existing approvals for this skill may prompt again because its instructions changed.
+
+### tests
+
+- explicitly validate response contracts and text fallbacks, prove the index-build overlap, and add synthetic interactive-host workflow goldens.
+
 ## 3.4.0
 
 ### added

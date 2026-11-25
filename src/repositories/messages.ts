@@ -573,7 +573,7 @@ function loadRows(input: {
       FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
       WHERE m.ROWID = ? AND cmj.chat_id IN (${placeholders(input.chatIds)})`)
     .get(input.aroundId, ...input.chatIds) as { date: string; rowid: number } | undefined;
-  if (!center) throw new ImessageMcpError("INVALID_INPUT", "around_message reference was not found");
+  if (!center) throw new ImessageMcpError("INVALID_INPUT", "around_message_id was not found in this conversation");
   const centerDate = sqliteIntegerBinding(sqliteIntegerToken(center.date, "around-message timestamp"));
   const before = Math.floor((input.limit - 1) / 2);
   const after = input.limit - before - 1;
@@ -889,10 +889,6 @@ export async function getConversationEvents(input: {
       before = { ...decoded, frozen, before_date: beforeDate };
     }
     const aroundId = input.aroundMessage === undefined ? undefined : positiveId(input.aroundMessage, "around_message_id");
-    if (aroundId !== undefined) {
-      const present = request.db.prepare("SELECT 1 AS present FROM message WHERE ROWID = ?").get(aroundId);
-      if (!present) throw new ImessageMcpError("INVALID_INPUT", "around_message_id was not found");
-    }
     const rows = loadRows({
       request,
       chatIds: input.chatIds,

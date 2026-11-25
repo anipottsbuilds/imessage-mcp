@@ -376,7 +376,8 @@ export class LocalToolRuntime {
   }
 
   private async serverStatus(privacy: PrivacyMode): Promise<CallToolResult> {
-    const update = await checkForUpdate(packageJson.version);
+    // An uncached npm lookup must not hold up this tool's shared query lane.
+    const update = await checkForUpdate(packageJson.version, { waitMs: 0 });
     const request = this.database.request();
     try {
       const detectedServices = this.detectedServices(request);
@@ -445,22 +446,30 @@ export class LocalToolRuntime {
       privacy,
       catalog: this.conversationCatalog,
     });
-    // Each conversation carries its latest message, so "who is waiting on me"
-    // takes one call instead of one get_conversation per thread.
+    // Only full and redacted lists expose previews. Aggregate counts come
+    // from the conversation summaries and need no additional message reads.
     const conversations = [];
+    let incompletePreviews = 0;
     for (const [index, conversation] of listed.conversations.entries()) {
-      const latest = await getConversationEvents({
+      if (privacy === "aggregate") {
+        conversations.push(conversation);
+        continue;
+      }
+      const preview = await getConversationEvents({
         context: this.database,
         contacts: this.contacts,
         decoder: this.decoder,
         chatIds: listed.chatIds[index],
         limit: 1,
-        bounds: compileDateBounds({ timezone: filters.bounds.timezone }),
+        bounds: filters.bounds,
+        service: filters.service,
         eventFilters: ["message"],
         allowPartial: true,
         privacy,
         includeAttachmentPaths: false,
-      }).then((result) => result.events.at(-1), () => undefined);
+      }).catch(() => undefined);
+      const latest = preview?.events.at(-1);
+      if (!preview || preview.warnings.length || latest?.row_status === "partial") incompletePreviews += 1;
       conversations.push(latest ? {
         ...conversation,
         latest_message: {
@@ -484,6 +493,9 @@ export class LocalToolRuntime {
       },
       data: { conversations },
       page: { next_cursor: listed.nextCursor, has_more: listed.hasMore, as_of: listed.asOf },
+      warnings: incompletePreviews > 0
+        ? [{ code: "PARTIAL_PREVIEWS", message: "some latest message previews could not be fully read", skipped_count: incompletePreviews }]
+        : undefined,
     });
   }
 
@@ -545,11 +557,11 @@ export class LocalToolRuntime {
     return chatIds.map((id) => labels.get(id)).find(Boolean);
   }
 
-  private async searchMessages(params: ToolParams, privacy: PrivacyMode): Promise<CallToolResult> {
+  private searchInput(params: ToolParams, privacy: PrivacyMode): Parameters<MemorySearchIndex["search"]>[0] {
     const query = optionalString(params, "query") ?? "";
     if (!query.length) throw new ImessageMcpError("INVALID_INPUT", "search query must not be empty");
     const bounds = compileDateBounds(dateInput(params));
-    const result = await this.search.search({
+    return {
       query,
       mode: params.mode as "substring" | "exact" | "token" | "phrase",
       scopes: params.scopes as Array<"text" | "conversation_names" | "attachment_filenames">,
@@ -561,14 +573,29 @@ export class LocalToolRuntime {
       cursor: optionalString(params, "cursor"),
       allowPartial: Boolean(params.allow_partial),
       privacy,
-    });
+    };
+  }
+
+  async prepareColdSearch(params: ToolParams): Promise<CallToolResult | undefined> {
+    let privacy = this.config.privacy_ceiling;
+    try {
+      privacy = requestedPrivacy(this.config, params);
+      await this.search.prepareColdSearch(this.searchInput(params, privacy));
+    } catch (error) {
+      return errorResult("search_messages", error, privacy, this.maskingKey);
+    }
+  }
+
+  private async searchMessages(params: ToolParams, privacy: PrivacyMode): Promise<CallToolResult> {
+    const input = this.searchInput(params, privacy);
+    const result = await this.search.search(input);
     return successResult({
       tool: "search_messages",
       privacy,
       maskingKey: this.maskingKey,
       effectiveScope: {
         privacy_mode: privacy,
-        timezone: bounds.timezone,
+        timezone: input.bounds.timezone,
         scopes: params.scopes,
         service_family: params.service_family ?? "all",
         from_me: typeof params.from_me === "boolean" ? params.from_me : "all",
