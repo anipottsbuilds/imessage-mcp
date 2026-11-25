@@ -26,7 +26,7 @@ const run = (command, args, cwd) => {
 rmSync(output, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 
-for (const entry of ["dist", "bin", "package.json", "package-lock.json", "manifest.json"]) {
+for (const entry of ["dist", "bin", "skills", "package.json", "package-lock.json", "manifest.json"]) {
   const source = path.join(repository, entry);
   statSync(source);
   cpSync(source, path.join(stage, entry), { recursive: true });
