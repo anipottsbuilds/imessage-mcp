@@ -11,6 +11,7 @@ import { MAX_CURSOR_LENGTH, MAX_SYNC_CURSOR_LENGTH } from "./references.js";
 import { errorResult } from "./result.js";
 import { LocalToolRuntime } from "./runtime.js";
 import { SERVER_ICONS } from "./icon.js";
+import { workflowSkills } from "./workflow-skills.js";
 
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
@@ -705,6 +706,7 @@ export function createMcpServer(runtime: ToolRuntime): McpServer {
   registerTools(server, runtime);
   registerPrompts(server);
   registerResources(server, runtime);
+  workflowSkills.attach(server);
   return server;
 }
 

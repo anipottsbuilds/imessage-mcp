@@ -179,6 +179,17 @@ Ask in plain words: "catch me up on my texts", "find the message about the dinne
 
 Clients that attach resources can use `imessage://conversations` and `imessage://conversations/{chat_id}`.
 
+## Skills
+
+Clients that support [Skills over MCP](https://skills.extensions.modelcontextprotocol.io/) can discover two read-only workflows. They ship as instructions only, with no commands or scripts.
+
+| skill | what it does |
+| --- | --- |
+| `catch-up` | Rank recent messages that may need your reply or action. |
+| `find-it` | Search for a message, verify its chat and sender, and cite the matching message ID. |
+
+In a [supported interactive Claude Code session](https://code.claude.com/docs/en/mcp#use-skills-from-mcp-servers) on v2.1.331 or newer, type `/imessage:catch-up` or `/imessage:find-it` if your server is named `imessage`. Use your configured server name otherwise. Skills are in beta. If your client doesn't offer them, the tools and prompt menu still work as before. The skills obey the server's existing privacy settings.
+
 ## Tools
 
 | tool | what it does |
